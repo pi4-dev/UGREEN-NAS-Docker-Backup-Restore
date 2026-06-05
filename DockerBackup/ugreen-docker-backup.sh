@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# UGREEN Docker Backup - v1.00
-# Copyright Roman Glos 2026
+# UGREEN Docker Backup - v1.10
+# Copyright (c) 2026 Roman Glos
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.00"
+SCRIPT_VERSION="1.10"
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -46,6 +46,10 @@ BACKUP_DOCKER_METADATA="${BACKUP_DOCKER_METADATA:-true}"
 BACKUP_IMAGES="${BACKUP_IMAGES:-false}"
 BACKUP_NAMED_VOLUMES="${BACKUP_NAMED_VOLUMES:-false}"
 BACKUP_EXTERNAL_BINDS="${BACKUP_EXTERNAL_BINDS:-false}"
+# true = also back up bind mounts below SOURCE_DIR that are outside the project folder.
+# This catches project-related side folders such as /volume2/docker/livisi-legacy-proxy
+# without archiving large data shares like /volume1/Emby.
+BACKUP_DOCKER_DIR_EXTERNAL_BINDS="${BACKUP_DOCKER_DIR_EXTERNAL_BINDS:-true}"
 
 ARCHIVE_PREFIX="${ARCHIVE_PREFIX:-ugreen-docker-backup}"
 COMPRESS_BACKUP="${COMPRESS_BACKUP:-true}"
@@ -484,6 +488,8 @@ collect_metadata(){
     echo "EXCLUDE_CONTAINERS=${EXCLUDE_CONTAINERS}"
     echo "BACKUP_EXCLUDE_PATHS_FILE=${BACKUP_EXCLUDE_PATHS_FILE}"
     echo "BACKUP_EXCLUDE_PATHS=${BACKUP_EXCLUDE_PATHS}"
+    echo "BACKUP_EXTERNAL_BINDS=${BACKUP_EXTERNAL_BINDS}"
+    echo "BACKUP_DOCKER_DIR_EXTERNAL_BINDS=${BACKUP_DOCKER_DIR_EXTERNAL_BINDS}"
   } > "${stage_dir}/metadata/manifest.env"
   print_configured_backup_exclude_paths > "${stage_dir}/metadata/backup_exclude_paths.txt"
 
@@ -664,6 +670,7 @@ with open(out_dir / "selected_images.txt", "w", encoding="utf-8") as f:
 # External bind mounts and named volumes used by selected containers.
 selected_names = {c["name"] for c in containers if c.get("selected")}
 external_binds = []
+bind_mounts = []
 named_volumes = []
 for c in data:
     name = (c.get("Name") or "").lstrip("/")
@@ -678,20 +685,265 @@ for c in data:
         dst = m.get("Destination") or ""
         rw = m.get("RW")
         if mtype == "bind":
-            inside_project = bool(workdir and src.rstrip("/").startswith(workdir.rstrip("/") + "/"))
-            inside_source = bool(source_dir and src.rstrip("/").startswith(source_dir.rstrip("/") + "/"))
-            if not inside_project and not inside_source:
+            src_norm = src.rstrip("/")
+            workdir_norm = workdir.rstrip("/")
+            source_norm = source_dir.rstrip("/")
+            inside_project = bool(workdir_norm and (src_norm == workdir_norm or src_norm.startswith(workdir_norm + "/")))
+            inside_source = bool(source_norm and (src_norm == source_norm or src_norm.startswith(source_norm + "/")))
+            if not inside_project:
                 external_binds.append({
                     "container": name, "project": project, "source": src, "destination": dst, "rw": rw
                 })
+            if os.path.isdir(src):
+                source_type = "dir"
+            elif os.path.isfile(src):
+                source_type = "file"
+            elif os.path.exists(src):
+                source_type = "other"
+            else:
+                source_type = "missing"
+            bind_mounts.append({
+                "project": project, "container": name, "source": src, "destination": dst, "rw": rw,
+                "inside_project": str(inside_project).lower(),
+                "inside_source": str(inside_source).lower(),
+                "source_type": source_type,
+            })
         elif mtype == "volume":
             named_volumes.append({
                 "container": name, "project": project, "name": m.get("Name") or "", "source": src, "destination": dst, "rw": rw
             })
 
 write_tsv("external_bind_mounts.tsv", external_binds, ["project","container","source","destination","rw"])
+write_tsv("bind_mounts.tsv", bind_mounts, ["project","container","source","destination","rw","inside_project","inside_source","source_type"])
 write_tsv("selected_named_volumes.tsv", named_volumes, ["project","container","name","source","destination","rw"])
 PY
+}
+
+
+create_network_inventory(){
+  log_i "[Netzwerke] Docker-Netzwerke der ausgewählten Projekte werden erfasst." "[Networks] Collecting Docker networks used by selected projects."
+
+  export DOCKER_BIN SOURCE_DIR
+  "$PYTHON_BIN" - "${stage_dir}/metadata/docker_containers_inspect.json" "${stage_dir}/metadata/docker_networks_inspect.json" "${stage_dir}/metadata" <<'PYNETINV'
+import csv
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+containers_file = Path(sys.argv[1])
+networks_file = Path(sys.argv[2])
+out_dir = Path(sys.argv[3])
+docker_bin = os.environ.get("DOCKER_BIN", "docker")
+
+try:
+    containers = json.loads(containers_file.read_text(encoding="utf-8"))
+except Exception:
+    containers = []
+try:
+    networks = json.loads(networks_file.read_text(encoding="utf-8"))
+except Exception:
+    networks = []
+
+warnings = []
+
+def read_tsv(path):
+    p = out_dir / path
+    if not p.exists():
+        return []
+    with p.open("r", encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f, delimiter="\t"))
+
+inventory = read_tsv("containers_inventory.tsv")
+projects_rows = read_tsv("selected_projects.tsv")
+
+selected_names = {r.get("name", "") for r in inventory if str(r.get("selected", "")).lower() in ("true", "1", "yes", "ja")}
+selected_projects = {r.get("project", "") for r in projects_rows if r.get("project", "")}
+
+used_networks = set()
+network_users = {}
+network_sources = {}
+compose_declared = {}
+
+
+def add_network(name, used_by, source=""):
+    if not name or name in ("bridge", "host", "none"):
+        return
+    used_networks.add(name)
+    if used_by:
+        network_users.setdefault(name, set()).add(used_by)
+    if source:
+        network_sources.setdefault(name, set()).add(source)
+
+# 1) Real container attachments. This catches external networks like 120erNetz.
+for c in containers:
+    name = (c.get("Name") or "").lstrip("/")
+    if name not in selected_names:
+        continue
+    labels = (c.get("Config") or {}).get("Labels") or {}
+    project = labels.get("com.docker.compose.project") or ""
+    label = f"{project}/{name}" if project else name
+    for net_name in ((c.get("NetworkSettings") or {}).get("Networks") or {}).keys():
+        add_network(net_name, label, "container")
+
+# 2) Existing Docker networks with Compose project labels. This also catches stopped projects.
+for n in networks:
+    name = n.get("Name") or ""
+    labels = n.get("Labels") or {}
+    project = labels.get("com.docker.compose.project") or ""
+    if project and project in selected_projects:
+        add_network(name, project, "network-label")
+
+# 3) Compose config references. This catches external networks even before any container is running.
+#    The result is used only if the network exists in docker network inspect, or as a minimal fallback.
+def split_config_files(value):
+    if not value:
+        return []
+    return [x.strip() for x in value.split(",") if x.strip()]
+
+
+def compose_actual_network_name(project, key, net_cfg):
+    if not isinstance(net_cfg, dict):
+        net_cfg = {}
+    explicit_name = net_cfg.get("name")
+    if explicit_name:
+        return str(explicit_name)
+    # Docker Compose uses <project>_<network>. The default network is <project>_default.
+    return f"{project}_{key}"
+
+
+def collect_compose_networks(project, workdir, config_files):
+    if not project or not workdir:
+        return
+    files = split_config_files(config_files)
+    if not files:
+        for candidate in ("docker-compose.yaml", "docker-compose.yml", "compose.yaml", "compose.yml"):
+            p = Path(workdir) / candidate
+            if p.exists():
+                files = [str(p)]
+                break
+    if not files:
+        return
+    cmd = [docker_bin, "compose", "-p", project]
+    for f in files:
+        cmd += ["-f", f]
+    cmd += ["config", "--format", "json"]
+    try:
+        proc = subprocess.run(cmd, cwd=workdir, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    except Exception as exc:
+        warnings.append(f"{project}: docker compose config konnte nicht ausgeführt werden: {exc}")
+        return
+    if proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout or "").strip().replace("\n", " | ")
+        warnings.append(f"{project}: docker compose config fehlgeschlagen: {msg[:500]}")
+        return
+    try:
+        cfg = json.loads(proc.stdout or "{}")
+    except Exception as exc:
+        warnings.append(f"{project}: docker compose config JSON konnte nicht gelesen werden: {exc}")
+        return
+    nets = cfg.get("networks") or {}
+    if not isinstance(nets, dict):
+        return
+    for key, net_cfg in nets.items():
+        if not isinstance(net_cfg, dict):
+            net_cfg = {}
+        actual = compose_actual_network_name(project, key, net_cfg)
+        add_network(actual, project, "compose-config")
+        compose_declared.setdefault(actual, {"project": project, "key": key, "config": net_cfg})
+
+for row in projects_rows:
+    collect_compose_networks(row.get("project", ""), row.get("working_dir", ""), row.get("config_files", ""))
+
+by_name = {n.get("Name", ""): n for n in networks if n.get("Name")}
+plan = []
+missing_from_inspect = []
+for name in sorted(used_networks):
+    n = by_name.get(name)
+    declared = compose_declared.get(name, {})
+    if not n:
+        cfg = declared.get("config") or {}
+        driver = cfg.get("driver") or "bridge"
+        item = {
+            "name": name,
+            "id": "",
+            "driver": driver,
+            "scope": "local",
+            "internal": bool(cfg.get("internal", False)),
+            "attachable": bool(cfg.get("attachable", False)),
+            "ingress": False,
+            "enable_ipv6": bool(cfg.get("enable_ipv6", False)),
+            "options": cfg.get("driver_opts") or {},
+            "ipam_driver": ((cfg.get("ipam") or {}).get("driver") or "default") if isinstance(cfg.get("ipam"), dict) else "default",
+            "ipam_options": ((cfg.get("ipam") or {}).get("options") or {}) if isinstance(cfg.get("ipam"), dict) else {},
+            "ipam_config": ((cfg.get("ipam") or {}).get("config") or []) if isinstance(cfg.get("ipam"), dict) else [],
+            "labels": {},
+            "missing_on_source": True,
+            "external_reference": bool(cfg.get("external", False)),
+            "sources": sorted(network_sources.get(name, [])),
+        }
+        missing_from_inspect.append(name)
+    else:
+        ipam = n.get("IPAM") or {}
+        item = {
+            "name": name,
+            "id": n.get("Id", ""),
+            "driver": n.get("Driver") or "bridge",
+            "scope": n.get("Scope") or "local",
+            "internal": bool(n.get("Internal")),
+            "attachable": bool(n.get("Attachable")),
+            "ingress": bool(n.get("Ingress")),
+            "enable_ipv6": bool(n.get("EnableIPv6")),
+            "options": n.get("Options") or {},
+            "ipam_driver": ipam.get("Driver") or "default",
+            "ipam_options": ipam.get("Options") or {},
+            "ipam_config": ipam.get("Config") or [],
+            "labels": n.get("Labels") or {},
+            "missing_on_source": False,
+            "external_reference": bool((declared.get("config") or {}).get("external", False)),
+            "sources": sorted(network_sources.get(name, [])),
+        }
+    item["used_by"] = sorted(network_users.get(name, []))
+    plan.append(item)
+
+(out_dir / "network_create_plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+with (out_dir / "selected_networks.tsv").open("w", encoding="utf-8", newline="") as f:
+    fields = ["name", "driver", "internal", "attachable", "enable_ipv6", "subnet", "gateway", "ip_range", "parent", "external_reference", "missing_on_source", "sources", "used_by"]
+    w = csv.DictWriter(f, fieldnames=fields, delimiter="\t")
+    w.writeheader()
+    for item in plan:
+        cfg = item.get("ipam_config") or []
+        first = cfg[0] if cfg and isinstance(cfg[0], dict) else {}
+        opts = item.get("options") or {}
+        w.writerow({
+            "name": item.get("name", ""),
+            "driver": item.get("driver", ""),
+            "internal": str(item.get("internal", False)).lower(),
+            "attachable": str(item.get("attachable", False)).lower(),
+            "enable_ipv6": str(item.get("enable_ipv6", False)).lower(),
+            "subnet": first.get("Subnet", "") or first.get("subnet", ""),
+            "gateway": first.get("Gateway", "") or first.get("gateway", ""),
+            "ip_range": first.get("IPRange", "") or first.get("ip_range", ""),
+            "parent": opts.get("parent", ""),
+            "external_reference": str(item.get("external_reference", False)).lower(),
+            "missing_on_source": str(item.get("missing_on_source", False)).lower(),
+            "sources": ",".join(item.get("sources", [])),
+            "used_by": ",".join(item.get("used_by", [])),
+        })
+
+with (out_dir / "network_inventory_warnings.txt").open("w", encoding="utf-8") as f:
+    if missing_from_inspect:
+        f.write("Netzwerke aus Compose-Referenzen ohne docker network inspect auf dem Quell-NAS:\n")
+        for name in missing_from_inspect:
+            f.write(f"- {name}\n")
+    for w in warnings:
+        f.write(w + "\n")
+
+print(f"network_create_plan_count={len(plan)}")
+PYNETINV
 }
 
 
@@ -1012,7 +1264,9 @@ backup_named_volumes(){
 }
 
 backup_external_binds(){
-  is_true "$BACKUP_EXTERNAL_BINDS" || return 0
+  if is_false "$BACKUP_EXTERNAL_BINDS" && is_false "$BACKUP_DOCKER_DIR_EXTERNAL_BINDS"; then
+    return 0
+  fi
   local list="${stage_dir}/metadata/external_bind_mounts.tsv"
   [[ -f "$list" ]] || return 0
 
@@ -1028,11 +1282,24 @@ backup_external_binds(){
   log_i "[Bind-Mounts] Externe Bind-Mounts werden gesichert." "[Bind mounts] Backing up external bind mounts."
   mkdir_safe "${stage_dir}/external-binds"
 
-  local project container source destination rw safe hash archive parent base existing
+  local project container source destination rw safe hash archive parent base existing backup_this
   declare -A source_to_archive=()
 
   while IFS=$'\t' read -r project container source destination rw; do
     [[ "$project" == "project" || -z "$source" ]] && continue
+
+    backup_this="false"
+    if is_true "$BACKUP_EXTERNAL_BINDS"; then
+      backup_this="true"
+    elif is_true "$BACKUP_DOCKER_DIR_EXTERNAL_BINDS" && path_in_dir "$source" "$SOURCE_DIR"; then
+      backup_this="true"
+    fi
+
+    if [[ "$backup_this" != "true" ]]; then
+      log_i "[Bind-Mounts] Externer Pfad wird nur dokumentiert, nicht gesichert: ${source}" "[Bind mounts] External path is documented only, not backed up: ${source}"
+      echo -e "${project}\t${container}\t${source}\t${destination}\t${rw}\t" >> "$done_file"
+      continue
+    fi
 
     if [[ ! -e "$source" ]]; then
       log_i "[Bind-Mounts] Quelle fehlt, wird übersprungen: ${source}" "[Bind mounts] Source missing, skipping: ${source}"
@@ -1447,6 +1714,7 @@ main(){
 
   collect_metadata
   create_inventory
+  create_network_inventory
 
   local selected_count running_count external_count
   selected_count="$(awk 'NR>1 && $1!="" {c++} END{print c+0}' "${stage_dir}/metadata/selected_projects.tsv" 2>/dev/null || echo 0)"

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# UGREEN Docker Restore - v1.00
-# Copyright Roman Glos 2026
+# UGREEN Docker Restore - v1.10
+# Copyright (c) 2026 Roman Glos
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.00"
+SCRIPT_VERSION="1.10"
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -34,6 +34,15 @@ EXCLUDE_PROJECTS="${EXCLUDE_PROJECTS:-}"
 RESTORE_OVERWRITE_EXISTING="${RESTORE_OVERWRITE_EXISTING:-false}"
 RESTORE_STOP_EXISTING_PROJECTS="${RESTORE_STOP_EXISTING_PROJECTS:-true}"
 RESTORE_RUN_COMPOSE_UP="${RESTORE_RUN_COMPOSE_UP:-true}"
+RESTORE_CONTINUE_ON_COMPOSE_ERROR="${RESTORE_CONTINUE_ON_COMPOSE_ERROR:-true}"
+RESTORE_RECREATE_NETWORKS="${RESTORE_RECREATE_NETWORKS:-true}"
+RESTORE_CREATE_MISSING_NETWORKS="${RESTORE_CREATE_MISSING_NETWORKS:-true}"
+RESTORE_CREATE_MACVLAN_NETWORKS="${RESTORE_CREATE_MACVLAN_NETWORKS:-true}"
+RESTORE_MACVLAN_PARENT="${RESTORE_MACVLAN_PARENT:-auto}"
+RESTORE_MACVLAN_PARENT_MAP="${RESTORE_MACVLAN_PARENT_MAP:-}"
+RESTORE_FAIL_ON_NETWORK_ERROR="${RESTORE_FAIL_ON_NETWORK_ERROR:-true}"
+RESTORE_VALIDATE_BIND_MOUNTS="${RESTORE_VALIDATE_BIND_MOUNTS:-true}"
+RESTORE_BACKGROUND="${RESTORE_BACKGROUND:-false}"
 
 ENABLE_PATH_REMAP="${ENABLE_PATH_REMAP:-true}"
 PATH_REMAP_FILE="${PATH_REMAP_FILE:-path-remap.tsv}"
@@ -81,6 +90,8 @@ UGOS_DB_STATUS="not executed"
 UGOS_REFRESH_STATUS="not executed"
 RESTORE_FAILURE_REASON=""
 LAST_CMD=""
+RESTORE_COMPOSE_FAILED=0
+RESTORE_COMPOSE_ERROR_COUNT=0
 
 lower(){ printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'; }
 is_true(){ case "$(lower "${1:-}")" in true|1|yes|y|ja) return 0;; *) return 1;; esac; }
@@ -119,6 +130,26 @@ rotate_logs(){
   fi
   touch "$lf"
   printf '%s' "$lf"
+}
+
+
+run_background_if_requested(){
+  is_true "$RESTORE_BACKGROUND" || return 0
+  [[ "${UGREEN_DOCKER_RESTORE_BACKGROUND_CHILD:-0}" == "1" ]] && return 0
+
+  mkdir_safe "$LOG_DIR"
+  local ts bg_log bg_pid script_path
+  ts="$(date +'%Y%m%d_%H%M%S')"
+  bg_log="${LOG_DIR}/ugreen-docker-restore-nohup-${ts}.log"
+  bg_pid="${LOG_DIR}/ugreen-docker-restore-nohup.pid"
+  script_path="$0"
+
+  echo "Starte Docker-Restore im Hintergrund."
+  echo "Log: ${bg_log}"
+  UGREEN_DOCKER_RESTORE_BACKGROUND_CHILD=1 RESTORE_BACKGROUND=false nohup "$script_path" "$RESTORE_ARCHIVE" > "$bg_log" 2>&1 &
+  echo $! > "$bg_pid"
+  echo "PID: $(cat "$bg_pid")"
+  exit 0
 }
 
 log(){ printf '[%s] %s\n' "$(date +'%F %T')" "$*" | tee -a "$log_file"; }
@@ -476,6 +507,32 @@ project_selected(){
   return 1
 }
 
+
+validate_restore_selection(){
+  log_i "[Check] Prüfe Restore-Auswahl." "[Check] Validating restore selection."
+
+  if [[ -z "${RESTORE_ARCHIVE:-}" ]]; then
+    die "$(tr_text '[Fehler] RESTORE_ARCHIVE ist nicht gesetzt.' '[Error] RESTORE_ARCHIVE is not set.')"
+  fi
+
+  if [[ ! -f "${RESTORE_ARCHIVE}" ]]; then
+    die "$(tr_text "[Fehler] Restore-Archiv nicht gefunden: ${RESTORE_ARCHIVE}" "[Error] Restore archive not found: ${RESTORE_ARCHIVE}")"
+  fi
+
+  if is_true "${RESTORE_ALL_PROJECTS:-false}"; then
+    log_i "[Check] Restore-Auswahl: alle Projekte." "[Check] Restore selection: all projects."
+    return 0
+  fi
+
+  if [[ -z "${RESTORE_PROJECTS:-}" ]]; then
+    log_i "[Check] RESTORE_ALL_PROJECTS=false und RESTORE_PROJECTS leer. Es werden alle im Backup vorhandenen Projekte berücksichtigt." "[Check] RESTORE_ALL_PROJECTS=false and RESTORE_PROJECTS is empty. All projects present in the backup will be considered."
+    return 0
+  fi
+
+  log_i "[Check] Restore-Auswahl: ${RESTORE_PROJECTS}" "[Check] Restore selection: ${RESTORE_PROJECTS}"
+  return 0
+}
+
 confirm_restore(){
   if is_true "$DRY_RUN"; then
     log_i "[DRY-RUN] Es werden keine Änderungen vorgenommen." "[DRY-RUN] No changes will be made."
@@ -816,58 +873,399 @@ restore_external_binds(){
 }
 
 
-count_selected_restore_projects(){
-  local mapfile="${backup_root}/metadata/project_archives.tsv"
-  [[ -f "$mapfile" ]] || return 1
+restore_docker_networks(){
+  is_true "$RESTORE_RECREATE_NETWORKS" || return 0
+  local plan="${backup_root}/metadata/network_create_plan.json"
+  [[ -f "$plan" ]] || {
+    log_i "[Netzwerke] Kein Netzwerk-Wiederherstellungsplan im Backup gefunden, überspringe." "[Networks] No network restore plan found in backup, skipping."
+    return 0
+  }
 
-  local project archive workdir config_files count=0
-  while IFS=$'	' read -r project archive workdir config_files; do
-    [[ "$project" == "project" || -z "$project" ]] && continue
-    if project_selected "$project"; then
-      count=$((count+1))
-    fi
-  done < "$mapfile"
+  log_i "[Netzwerke] Netzwerke aus dem Backup werden vor dem Compose-Start geprüft." "[Networks] Checking backup networks before Compose startup."
 
-  printf '%s' "$count"
+  export RESTORE_CREATE_MISSING_NETWORKS RESTORE_CREATE_MACVLAN_NETWORKS RESTORE_MACVLAN_PARENT RESTORE_MACVLAN_PARENT_MAP RESTORE_FAIL_ON_NETWORK_ERROR DRY_RUN LANGUAGE
+  "$PYTHON_BIN" - "$plan" "$DOCKER_BIN" "$log_file" <<'PYNET'
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+plan_file, docker_bin, log_file = sys.argv[1:4]
+log_path = Path(log_file)
+
+TRUE = {"true", "1", "yes", "y", "ja", "on"}
+
+def is_true(value):
+    return str(value or "").strip().lower() in TRUE
+
+def log(msg):
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(msg + "\n")
+    print(msg)
+
+def run(cmd):
+    log("+ " + " ".join(cmd))
+    proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if proc.stdout:
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(proc.stdout)
+        print(proc.stdout, end="")
+    return proc.returncode
+
+def exists_net(name):
+    return subprocess.run([docker_bin, "network", "inspect", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+def iface_exists(name):
+    return bool(name) and Path("/sys/class/net", name).exists()
+
+def proc_default_ifaces():
+    result = []
+    try:
+        out = subprocess.run(["ip", "-o", "-4", "route", "show", "default"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if "dev" in parts and parts.index("dev") + 1 < len(parts):
+                result.append(parts[parts.index("dev") + 1])
+    except Exception:
+        pass
+    if not result:
+        try:
+            for line in Path("/proc/net/route").read_text().splitlines()[1:]:
+                parts = line.split()
+                if len(parts) > 1 and parts[1] == "00000000":
+                    result.append(parts[0])
+        except Exception:
+            pass
+    return result
+
+def ifaces_with_subnet(subnet):
+    result = []
+    if not subnet:
+        return result
+    try:
+        net = ipaddress.ip_network(subnet, strict=False)
+    except Exception:
+        return result
+    try:
+        out = subprocess.run(["ip", "-o", "-4", "addr", "show", "scope", "global"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[2] == "inet":
+                iface = parts[1]
+                addr = parts[3].split("/", 1)[0]
+                try:
+                    if ipaddress.ip_address(addr) in net:
+                        result.append(iface)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return result
+
+def bridge_members(iface):
+    members = []
+    p = Path("/sys/class/net", iface, "brif")
+    if p.exists():
+        try:
+            members.extend(sorted(x.name for x in p.iterdir()))
+        except Exception:
+            pass
+    return members
+
+def all_up_ifaces():
+    result = []
+    base = Path("/sys/class/net")
+    try:
+        for p in sorted(base.iterdir()):
+            n = p.name
+            if n in ("lo", "docker0") or n.startswith(("veth", "br-", "virbr")):
+                continue
+            state = (p / "operstate").read_text().strip() if (p / "operstate").exists() else ""
+            if state in ("up", "unknown"):
+                result.append(n)
+    except Exception:
+        pass
+    return result
+
+def parse_parent_map(value):
+    mapping = {}
+    for token in re.split(r"[;,\s]+", value or ""):
+        token = token.strip()
+        if not token or "=" not in token:
+            continue
+        k, v = token.split("=", 1)
+        if k.strip() and v.strip():
+            mapping[k.strip()] = v.strip()
+    return mapping
+
+def add_candidate(cands, value):
+    if not value:
+        return
+    value = value.strip()
+    if value and value not in cands and iface_exists(value):
+        cands.append(value)
+
+def macvlan_parent_candidates(item):
+    name = item.get("name") or ""
+    opts = item.get("options") or {}
+    cfg = (item.get("ipam_config") or [{}])[0] if item.get("ipam_config") else {}
+    subnet = cfg.get("Subnet") or ""
+    env_parent = os.environ.get("RESTORE_MACVLAN_PARENT", "auto").strip()
+    parent_map = parse_parent_map(os.environ.get("RESTORE_MACVLAN_PARENT_MAP", ""))
+
+    cands = []
+    add_candidate(cands, parent_map.get(name))
+
+    if env_parent and env_parent.lower() != "auto":
+        add_candidate(cands, env_parent)
+
+    # Backup option is used only if it is a real Linux interface on this NAS.
+    add_candidate(cands, str(opts.get("parent") or "").strip())
+
+    # Auto-detect the active LAN interface on the restore NAS.
+    for iface in ifaces_with_subnet(subnet):
+        add_candidate(cands, iface)
+        for member in bridge_members(iface):
+            add_candidate(cands, member)
+    for iface in proc_default_ifaces():
+        add_candidate(cands, iface)
+        for member in bridge_members(iface):
+            add_candidate(cands, member)
+    for iface in all_up_ifaces():
+        add_candidate(cands, iface)
+
+    return cands
+
+def build_base_cmd(item, driver):
+    cmd = [docker_bin, "network", "create", "--driver", driver]
+    if item.get("internal"):
+        cmd.append("--internal")
+    if item.get("attachable"):
+        cmd.append("--attachable")
+    if item.get("enable_ipv6"):
+        cmd.append("--ipv6")
+
+    ipam_driver = item.get("ipam_driver") or "default"
+    if ipam_driver and ipam_driver != "default":
+        cmd += ["--ipam-driver", ipam_driver]
+
+    for cfg in item.get("ipam_config") or []:
+        subnet = cfg.get("Subnet") or ""
+        gateway = cfg.get("Gateway") or ""
+        ip_range = cfg.get("IPRange") or ""
+        if subnet:
+            cmd += ["--subnet", subnet]
+        if gateway:
+            cmd += ["--gateway", gateway]
+        if ip_range:
+            cmd += ["--ip-range", ip_range]
+        for aux_name, aux_ip in (cfg.get("AuxiliaryAddresses") or {}).items():
+            if aux_name and aux_ip:
+                cmd += ["--aux-address", f"{aux_name}={aux_ip}"]
+    return cmd
+
+def print_manual_hint(item):
+    name = item.get("name") or ""
+    driver = item.get("driver") or ""
+    cfg = (item.get("ipam_config") or [{}])[0] if item.get("ipam_config") else {}
+    subnet = cfg.get("Subnet", "")
+    gateway = cfg.get("Gateway", "")
+    parent = (item.get("options") or {}).get("parent", "")
+    log("[Netzwerke] Manuelle Anlage in UGOS Docker-App:")
+    log(f"  Name    : {name}")
+    log(f"  Modus   : {driver}")
+    if parent:
+        log(f"  Parent aus Backup: {parent}")
+    if subnet:
+        log(f"  Subnetz : {subnet}")
+    if gateway:
+        log(f"  Gateway : {gateway}")
+    log("  Hinweis : In UGOS bei macvlan die LAN-Karte auswaehlen, z. B. BR-LAN1. Docker CLI benoetigt dagegen den echten Linux-Interface-Namen wie bridge0 oder eth0.")
+
+def create_network(item):
+    name = item.get("name") or ""
+    driver = item.get("driver") or "bridge"
+    opts = item.get("options") or {}
+    labels = item.get("labels") or {}
+
+    if driver == "macvlan":
+        if not is_true(os.environ.get("RESTORE_CREATE_MACVLAN_NETWORKS", "true")):
+            log(f"[Netzwerke] FEHLT macvlan: {name}. Automatisches Anlegen ist deaktiviert.")
+            print_manual_hint(item)
+            return False
+        candidates = macvlan_parent_candidates(item)
+        if not candidates:
+            log(f"[Netzwerke] FEHLT macvlan: {name}. Keine passende Linux-Netzwerkschnittstelle erkannt.")
+            print_manual_hint(item)
+            return False
+
+        base = build_base_cmd(item, driver)
+        filtered_opts = {k: v for k, v in opts.items() if k != "parent"}
+        for k, v in sorted(filtered_opts.items()):
+            if k and v is not None:
+                base += ["-o", f"{k}={v}"]
+        for k, v in sorted(labels.items()):
+            if k and v is not None:
+                base += ["--label", f"{k}={v}"]
+
+        log(f"[Netzwerke] Erstelle macvlan-Netzwerk {name}. Kandidaten fuer parent: {', '.join(candidates)}")
+        for parent in candidates:
+            cmd = list(base) + ["-o", f"parent={parent}", name]
+            rc = run(cmd)
+            if rc == 0:
+                log(f"[Netzwerke] OK: macvlan-Netzwerk {name} wurde mit parent={parent} erstellt.")
+                return True
+            subprocess.run([docker_bin, "network", "rm", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log(f"[Netzwerke] FEHLER: macvlan-Netzwerk {name} konnte mit keinem Kandidaten erstellt werden.")
+        print_manual_hint(item)
+        return False
+
+    cmd = build_base_cmd(item, driver)
+    for k, v in sorted(opts.items()):
+        if k and v is not None:
+            cmd += ["-o", f"{k}={v}"]
+    for k, v in sorted(labels.items()):
+        if k and v is not None:
+            cmd += ["--label", f"{k}={v}"]
+    cmd.append(name)
+    return run(cmd) == 0
+
+try:
+    plan = json.loads(Path(plan_file).read_text(encoding="utf-8"))
+except Exception as exc:
+    log(f"[Netzwerke] Netzwerkplan konnte nicht gelesen werden: {exc}")
+    raise SystemExit(0)
+
+if not isinstance(plan, list):
+    log("[Netzwerke] Netzwerkplan hat ein ungueltiges Format, ueberspringe.")
+    raise SystemExit(0)
+
+missing = []
+for item in plan:
+    name = item.get("name") or ""
+    if not name or name in ("bridge", "host", "none"):
+        continue
+    cfg = (item.get("ipam_config") or [{}])[0] if item.get("ipam_config") else {}
+    detail = f"{name} ({item.get('driver') or 'bridge'}"
+    if cfg.get("Subnet"):
+        detail += f", subnet={cfg.get('Subnet')}"
+    if cfg.get("Gateway"):
+        detail += f", gateway={cfg.get('Gateway')}"
+    detail += ")"
+    if exists_net(name):
+        log(f"[Netzwerke] OK vorhanden: {detail}")
+    else:
+        log(f"[Netzwerke] FEHLT: {detail}")
+        missing.append(item)
+
+if not missing:
+    log("[Netzwerke] OK: Alle im Backup benoetigten Netzwerke sind vorhanden.")
+    raise SystemExit(0)
+
+if is_true(os.environ.get("DRY_RUN", "true")):
+    log("[DRY-RUN] Fehlende Netzwerke wuerden vor dem Compose-Start angelegt bzw. als manuelle Aktion gemeldet.")
+    for item in missing:
+        if (item.get("driver") or "") == "macvlan":
+            cands = macvlan_parent_candidates(item)
+            log(f"[DRY-RUN] macvlan {item.get('name')}: parent-Kandidaten: {', '.join(cands) if cands else 'keine'}")
+    raise SystemExit(0)
+
+if not is_true(os.environ.get("RESTORE_CREATE_MISSING_NETWORKS", "true")):
+    log("[Netzwerke] Automatisches Anlegen fehlender Netzwerke ist deaktiviert.")
+    for item in missing:
+        print_manual_hint(item)
+    raise SystemExit(2 if is_true(os.environ.get("RESTORE_FAIL_ON_NETWORK_ERROR", "true")) else 0)
+
+failed = []
+for item in missing:
+    if not create_network(item):
+        failed.append(item.get("name") or "unknown")
+
+if failed:
+    log("[Netzwerke] FEHLER: Folgende Netzwerke fehlen weiterhin: " + ", ".join(failed))
+    raise SystemExit(2 if is_true(os.environ.get("RESTORE_FAIL_ON_NETWORK_ERROR", "true")) else 0)
+
+log("[Netzwerke] OK: Fehlende Netzwerke wurden angelegt.")
+PYNET
 }
 
-validate_restore_selection(){
-  local mapfile="${backup_root}/metadata/project_archives.tsv"
-  [[ -f "$mapfile" ]] || die "$(tr_text 'project_archives.tsv fehlt im Backup.' 'project_archives.tsv is missing in the backup.')"
 
-  local selected_count
-  selected_count="$(count_selected_restore_projects)"
-
-  if [[ "${selected_count:-0}" -eq 0 ]]; then
-    RESTORE_FAILURE_REASON="$(tr_text 'Keine Projekte für die Wiederherstellung ausgewählt. Bitte RESTORE_ALL_PROJECTS und RESTORE_PROJECTS prüfen.' 'No projects selected for restore. Please check RESTORE_ALL_PROJECTS and RESTORE_PROJECTS.')"
-    log_i "[Fehler] ${RESTORE_FAILURE_REASON}" "[Error] ${RESTORE_FAILURE_REASON}"
-    return 1
-  fi
-
-  log_i "[Auswahl] Ausgewählte Restore-Projekte: ${selected_count}" "[Selection] Selected restore projects: ${selected_count}"
-}
-
-validate_external_binds_for_project(){
+validate_bind_mounts_for_project(){
   local project="$1"
-  local vf="${backup_root}/metadata/external_bind_mounts.tsv"
+  is_true "$RESTORE_VALIDATE_BIND_MOUNTS" || return 0
+
+  local vf="${backup_root}/metadata/bind_mounts.tsv"
+  local fallback="false"
+  if [[ ! -f "$vf" ]]; then
+    vf="${backup_root}/metadata/external_bind_mounts.tsv"
+    fallback="true"
+  fi
   [[ -f "$vf" ]] || return 0
 
-  local row_project container source destination rw mapped_source missing=0
-  while IFS=$'\t' read -r row_project container source destination rw; do
-    [[ "$row_project" == "project" || -z "$row_project" ]] && continue
+  local row_project container source destination rw inside_project inside_source source_type mapped_source missing=0 mismatch=0
+  while IFS=$'\t' read -r row_project container source destination rw inside_project inside_source source_type; do
+    [[ "$row_project" == "project" || -z "$row_project" || -z "$source" ]] && continue
     [[ "$row_project" == "$project" ]] || continue
     mapped_source="$(map_path "$source")"
-    if [[ -n "$mapped_source" && ! -e "$mapped_source" ]]; then
-      log_i "[Bind-Mounts] Fehlender externer Pfad für ${project}: ${mapped_source} -> ${destination}" "[Bind mounts] Missing external path for ${project}: ${mapped_source} -> ${destination}"
+
+    if [[ -z "$mapped_source" || ! -e "$mapped_source" ]]; then
+      log_i "[Bind-Mounts] Fehlender Bind-Mount-Pfad für ${project}: ${mapped_source} -> ${destination}" "[Bind mounts] Missing bind mount path for ${project}: ${mapped_source} -> ${destination}"
       missing=$((missing+1))
+      continue
+    fi
+
+    if [[ "$fallback" != "true" ]]; then
+      case "$source_type" in
+        file)
+          if [[ ! -f "$mapped_source" ]]; then
+            log_i "[Bind-Mounts] Typfehler für ${project}: Datei erwartet, aber Ziel ist keine Datei: ${mapped_source} -> ${destination}" "[Bind mounts] Type mismatch for ${project}: file expected, but target is not a file: ${mapped_source} -> ${destination}"
+            mismatch=$((mismatch+1))
+          fi
+          ;;
+        dir)
+          if [[ ! -d "$mapped_source" ]]; then
+            log_i "[Bind-Mounts] Typfehler für ${project}: Ordner erwartet, aber Ziel ist kein Ordner: ${mapped_source} -> ${destination}" "[Bind mounts] Type mismatch for ${project}: directory expected, but target is not a directory: ${mapped_source} -> ${destination}"
+            mismatch=$((mismatch+1))
+          fi
+          ;;
+      esac
     fi
   done < "$vf"
 
-  if (( missing > 0 )); then
-    RESTORE_FAILURE_REASON="$(tr_text "Fehlende externe Bind-Mount-Pfade für Projekt ${project}: ${missing}. Bitte Pfade auf dem Ziel-NAS anlegen oder per path-remap.tsv oder PATH_REMAP_FROM/PATH_REMAP_TO umleiten." "Missing external bind mount paths for project ${project}: ${missing}. Please create paths on the target NAS or remap them via path-remap.tsv or PATH_REMAP_FROM/PATH_REMAP_TO.")"
+  if (( missing > 0 || mismatch > 0 )); then
+    RESTORE_FAILURE_REASON="$(tr_text "Bind-Mount-Prüfung für Projekt ${project} fehlgeschlagen: ${missing} fehlend, ${mismatch} Typfehler." "Bind mount validation for project ${project} failed: ${missing} missing, ${mismatch} type mismatch.")"
     return 1
   fi
   return 0
+}
+compose_error_file(){
+  printf '%s' "${extract_parent}/restore_compose_errors.tsv"
+}
+
+record_compose_error(){
+  local project="$1" reason="$2" file
+  file="$(compose_error_file)"
+  if [[ ! -f "$file" ]]; then
+    printf 'project\treason\n' > "$file"
+  fi
+  printf '%s\t%s\n' "$project" "$reason" >> "$file"
+  RESTORE_COMPOSE_FAILED=1
+  RESTORE_COMPOSE_ERROR_COUNT=$((RESTORE_COMPOSE_ERROR_COUNT+1))
+  [[ -n "${RESTORE_FAILURE_REASON:-}" ]] || RESTORE_FAILURE_REASON="$reason"
+}
+
+handle_compose_error(){
+  local project="$1" reason="$2"
+  record_compose_error "$project" "$reason"
+  if is_true "$RESTORE_CONTINUE_ON_COMPOSE_ERROR"; then
+    log_i "[Compose] WARNUNG: ${project} fehlgeschlagen, Restore läuft mit den nächsten Projekten weiter. Grund: ${reason}" "[Compose] WARNING: ${project} failed, restore continues with the next projects. Reason: ${reason}"
+    return 0
+  fi
+  log_i "[Compose] Fehler: ${project}: ${reason}" "[Compose] Error: ${project}: ${reason}"
+  return 1
 }
 
 compose_up_projects(){
@@ -875,33 +1273,24 @@ compose_up_projects(){
   local mapfile="${backup_root}/metadata/project_archives.tsv"
   [[ -f "$mapfile" ]] || return 0
 
-  local project archive workdir config_files target_dir cf mapped_cf args missing any_missing=0
-
-  # Preflight first: check all selected projects before any container is started.
-  # This avoids partial restores when a later project fails because of missing external bind paths.
-  while IFS=$'\t' read -r project archive workdir config_files; do
-    [[ "$project" == "project" || -z "$project" ]] && continue
-    project_selected "$project" || continue
-    target_dir="$(map_path "$workdir")"
-    [[ -d "$target_dir" ]] || continue
-    if ! validate_external_binds_for_project "$project"; then
-      any_missing=1
-    fi
-  done < "$mapfile"
-
-  if (( any_missing > 0 )); then
-    return 1
-  fi
+  local project archive workdir config_files target_dir cf mapped_cf args missing reason
 
   while IFS=$'\t' read -r project archive workdir config_files; do
     [[ "$project" == "project" || -z "$project" ]] && continue
     project_selected "$project" || continue
 
     target_dir="$(map_path "$workdir")"
-    [[ -d "$target_dir" ]] || {
-      log_i "[Compose] Projektordner nicht vorhanden, überspringe ${project}: ${target_dir}" "[Compose] Project folder missing, skipping ${project}: ${target_dir}"
+    if [[ ! -d "$target_dir" ]]; then
+      reason="$(tr_text "Projektordner nicht vorhanden: ${target_dir}" "Project folder missing: ${target_dir}")"
+      if ! handle_compose_error "$project" "$reason"; then return 1; fi
       continue
-    }
+    fi
+
+    if ! validate_bind_mounts_for_project "$project"; then
+      reason="${RESTORE_FAILURE_REASON:-$(tr_text "Bind-Mount-Prüfung fehlgeschlagen" "Bind mount validation failed")}"
+      if ! handle_compose_error "$project" "$reason"; then return 1; fi
+      continue
+    fi
 
     if is_true "$RESTORE_STOP_EXISTING_PROJECTS"; then
       log_i "[Compose] Stoppe bestehendes Projekt ${project}, falls vorhanden." "[Compose] Stopping existing project ${project}, if present."
@@ -935,14 +1324,22 @@ compose_up_projects(){
     done
 
     if (( missing == 1 || ${#args[@]} == 0 )); then
-      RESTORE_FAILURE_REASON="$(tr_text "Keine gültige Compose-Datei für Projekt ${project} gefunden." "No valid compose file found for project ${project}.")"
-      log_i "[Compose] Projekt ${project} wird übersprungen, weil keine gültige Compose-Datei gefunden wurde." "[Compose] Project ${project} is skipped because no valid Compose file was found."
-      return 1
+      reason="$(tr_text "Keine gültige Compose-Datei für Projekt ${project} gefunden." "No valid Compose file found for project ${project}.")"
+      if ! handle_compose_error "$project" "$reason"; then return 1; fi
+      continue
     fi
 
     log_i "[Compose] Starte Projekt ${project}." "[Compose] Starting project ${project}."
-    run_cmd_in_dir "$target_dir" $DOCKER_BIN compose -p "$project" "${args[@]}" up -d
+    if ! run_cmd_in_dir "$target_dir" $DOCKER_BIN compose -p "$project" "${args[@]}" up -d; then
+      reason="${RESTORE_FAILURE_REASON:-$(tr_text "docker compose up fehlgeschlagen" "docker compose up failed")}"
+      if ! handle_compose_error "$project" "$reason"; then return 1; fi
+      continue
+    fi
   done < "$mapfile"
+
+  if (( RESTORE_COMPOSE_FAILED > 0 )); then
+    log_i "[Compose] Restore wurde fortgesetzt, aber ${RESTORE_COMPOSE_ERROR_COUNT} Projekt(e) hatten Compose-Fehler. Details: $(compose_error_file)" "[Compose] Restore continued, but ${RESTORE_COMPOSE_ERROR_COUNT} project(s) had Compose errors. Details: $(compose_error_file)"
+  fi
 }
 
 update_ugos_db(){
@@ -1426,6 +1823,7 @@ trap on_error ERR
 main(){
   mkdir_safe "$TEMP_DIR"
   mkdir_safe "$LOG_DIR"
+  run_background_if_requested
   log_file="$(rotate_logs)"
   script_start_epoch="$(date +%s)"
 
@@ -1447,9 +1845,10 @@ main(){
   restore_named_volumes
   restore_external_binds
   restore_project_dirs
-  compose_up_projects
+  restore_docker_networks
   update_ugos_db
   refresh_ugos_app
+  compose_up_projects
 
   local attach end_epoch duration duration_hm
   end_epoch="$(date +%s)"
