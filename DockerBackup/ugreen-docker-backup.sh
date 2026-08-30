@@ -15,7 +15,7 @@ if [[ -f "${ENV_FILE}" ]]; then
   set +a
 fi
 
-LANGUAGE="${LANGUAGE:-de}"
+LANGUAGE="${LANGUAGE:-en}"
 HOST_LABEL="${HOST_LABEL:-$(hostname 2>/dev/null || echo 'UGREEN NAS')}"
 BACKUP_DIR="${BACKUP_DIR:-/volume2/DockerBackup}"
 TEMP_DIR="${TEMP_DIR:-${BACKUP_DIR}/tmp}"
@@ -90,7 +90,7 @@ selected_running_ids=()
 TAR_EXCLUDE_ARGS=()
 backup_success="false"
 script_start_epoch=0
-REMOTE_BACKUP_STATUS="deaktiviert"
+REMOTE_BACKUP_STATUS="disabled"
 REMOTE_BACKUP_TARGET=""
 REMOTE_BACKUP_ERROR=""
 FAILURE_REASON=""
@@ -833,16 +833,16 @@ def collect_compose_networks(project, workdir, config_files):
     try:
         proc = subprocess.run(cmd, cwd=workdir, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     except Exception as exc:
-        warnings.append(f"{project}: docker compose config konnte nicht ausgeführt werden: {exc}")
+        warnings.append(f"{project}: docker compose config could not be executed: {exc}")
         return
     if proc.returncode != 0:
         msg = (proc.stderr or proc.stdout or "").strip().replace("\n", " | ")
-        warnings.append(f"{project}: docker compose config fehlgeschlagen: {msg[:500]}")
+        warnings.append(f"{project}: docker compose config failed: {msg[:500]}")
         return
     try:
         cfg = json.loads(proc.stdout or "{}")
     except Exception as exc:
-        warnings.append(f"{project}: docker compose config JSON konnte nicht gelesen werden: {exc}")
+        warnings.append(f"{project}: docker compose config JSON could not be read: {exc}")
         return
     nets = cfg.get("networks") or {}
     if not isinstance(nets, dict):
@@ -936,7 +936,7 @@ with (out_dir / "selected_networks.tsv").open("w", encoding="utf-8", newline="")
 
 with (out_dir / "network_inventory_warnings.txt").open("w", encoding="utf-8") as f:
     if missing_from_inspect:
-        f.write("Netzwerke aus Compose-Referenzen ohne docker network inspect auf dem Quell-NAS:\n")
+        f.write("Networks referenced by Compose without docker network inspect data on the source NAS:\n")
         for name in missing_from_inspect:
             f.write(f"- {name}\n")
     for w in warnings:
@@ -960,7 +960,7 @@ log_selection_summary(){
 
   if [[ -s "$containers_file" ]]; then
     log_i "[Auswahl] Laufende Container, die kurz gestoppt werden:" "[Selection] Running containers that will be stopped briefly:"
-    awk -F'\t' 'NR>1 && $3!="" {print "  - " $3 " (Projekt: " $4 ")"}' "$containers_file" | tee -a "$log_file"
+    awk -F'\t' 'NR>1 && $3!="" {print "  - " $3 " (Project: " $4 ")"}' "$containers_file" | tee -a "$log_file"
   else
     log_i "[Auswahl] Keine laufenden ausgewählten Container zu stoppen." "[Selection] No running selected containers to stop."
   fi
@@ -1394,13 +1394,13 @@ prune_local_backups(){
 }
 
 remote_backup(){
-  REMOTE_BACKUP_STATUS="deaktiviert"
+  REMOTE_BACKUP_STATUS="disabled"
   REMOTE_BACKUP_TARGET=""
   REMOTE_BACKUP_ERROR=""
   is_true "$ENABLE_REMOTE_BACKUP" || return 0
   [[ -n "$REMOTE_HOST" && -n "$REMOTE_USER" && -n "$REMOTE_PATH" ]] || {
-    REMOTE_BACKUP_STATUS="übersprungen"
-    REMOTE_BACKUP_ERROR="REMOTE_HOST, REMOTE_USER oder REMOTE_PATH fehlt."
+    REMOTE_BACKUP_STATUS="skipped"
+    REMOTE_BACKUP_ERROR="REMOTE_HOST, REMOTE_USER, or REMOTE_PATH is missing."
     log_i "[Remote] REMOTE_HOST, REMOTE_USER oder REMOTE_PATH fehlt. Remote-Sicherung wird übersprungen." "[Remote] REMOTE_HOST, REMOTE_USER or REMOTE_PATH missing. Skipping remote backup."
     return 0
   }
@@ -1409,13 +1409,13 @@ remote_backup(){
   base="$(basename "$backup_fullpath")"
   remote_file="${REMOTE_PATH%/}/${base}"
   remote_target_display="${REMOTE_USER}@${REMOTE_HOST}:${remote_file}"
-  REMOTE_BACKUP_STATUS="läuft"
+  REMOTE_BACKUP_STATUS="running"
   REMOTE_BACKUP_TARGET="$remote_target_display"
 
   log_i "[Remote] Erstelle Zielordner: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}" "[Remote] Creating target folder: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"
   if ! ssh -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p '$REMOTE_PATH'"; then
-    REMOTE_BACKUP_STATUS="fehlgeschlagen"
-    REMOTE_BACKUP_ERROR="Zielordner konnte nicht erstellt werden: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"
+    REMOTE_BACKUP_STATUS="failed"
+    REMOTE_BACKUP_ERROR="Target folder could not be created: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"
     log_i "[Remote] Fehler: Zielordner konnte nicht erstellt werden." "[Remote] Error: target folder could not be created."
     return 1
   fi
@@ -1425,23 +1425,23 @@ remote_backup(){
     scp)
       # UGOS works reliably with legacy scp mode (-O). Newer scp/SFTP mode may fail with /volume paths.
       if ! scp -O -P "$REMOTE_PORT" "$backup_fullpath" "${REMOTE_USER}@${REMOTE_HOST}:${remote_file}"; then
-        REMOTE_BACKUP_STATUS="fehlgeschlagen"
-        REMOTE_BACKUP_ERROR="SCP-Übertragung fehlgeschlagen: ${remote_target_display}"
+        REMOTE_BACKUP_STATUS="failed"
+        REMOTE_BACKUP_ERROR="SCP transfer failed: ${remote_target_display}"
         log_i "[Remote] Fehler: SCP-Übertragung fehlgeschlagen." "[Remote] Error: SCP transfer failed."
         return 1
       fi
       ;;
     rsync)
       if ! rsync -av -e "ssh -p ${REMOTE_PORT}" "$backup_fullpath" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH%/}/"; then
-        REMOTE_BACKUP_STATUS="fehlgeschlagen"
-        REMOTE_BACKUP_ERROR="Rsync-Übertragung fehlgeschlagen: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"
+        REMOTE_BACKUP_STATUS="failed"
+        REMOTE_BACKUP_ERROR="Rsync transfer failed: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"
         log_i "[Remote] Fehler: Rsync-Übertragung fehlgeschlagen." "[Remote] Error: rsync transfer failed."
         return 1
       fi
       ;;
     *)
-      REMOTE_BACKUP_STATUS="fehlgeschlagen"
-      REMOTE_BACKUP_ERROR="Unbekannte REMOTE_METHOD: ${REMOTE_METHOD}"
+      REMOTE_BACKUP_STATUS="failed"
+      REMOTE_BACKUP_ERROR="Unknown REMOTE_METHOD: ${REMOTE_METHOD}"
       log_i "[Remote] Unbekannte REMOTE_METHOD: ${REMOTE_METHOD}" "[Remote] Unknown REMOTE_METHOD: ${REMOTE_METHOD}"
       return 1
       ;;
@@ -1451,7 +1451,7 @@ remote_backup(){
     ssh -p "$REMOTE_PORT" "${REMOTE_USER}@${REMOTE_HOST}" \
       "mkdir -p '$REMOTE_PATH' && ls -1t '$REMOTE_PATH'/${ARCHIVE_PREFIX}_*.tar* 2>/dev/null | awk 'NR>${REMOTE_KEEP_BACKUPS}' | xargs -r rm -f --" || true
   fi
-  REMOTE_BACKUP_STATUS="erfolgreich"
+  REMOTE_BACKUP_STATUS="successful"
   REMOTE_BACKUP_ERROR=""
   log_i "[Remote] Externe Sicherung erfolgreich: ${remote_target_display}" "[Remote] Remote backup successful: ${remote_target_display}"
 }
@@ -1473,7 +1473,7 @@ from pathlib import Path
  backup_images, backup_named_volumes, backup_external_binds, enable_remote, remote_method,
  remote_user, remote_host, remote_path, log_file) = sys.argv[1:26]
 
-lang_en = (language or "de").lower().startswith("en")
+lang_en = (language or "en").lower().startswith("en")
 base = Path(stage_dir) if stage_dir else Path("")
 meta = base / "metadata"
 
@@ -1663,10 +1663,10 @@ PYREPORT
 
 on_error(){
   local exitcode=$?
-  local failed_cmd="${BASH_COMMAND:-unbekannt}"
+  local failed_cmd="${BASH_COMMAND:-unknown}"
   trap - ERR
   if [[ -z "${FAILURE_REASON:-}" ]]; then
-    FAILURE_REASON="Exit-Code ${exitcode}; letzter Befehl: ${failed_cmd}"
+    FAILURE_REASON="Exit code ${exitcode}; last command: ${failed_cmd}"
   fi
   log_i "[Fehler] Backup wurde abgebrochen. Exit-Code: ${exitcode}" "[Error] Backup aborted. Exit code: ${exitcode}"
   restart_selected_containers || true

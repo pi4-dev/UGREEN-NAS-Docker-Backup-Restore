@@ -15,7 +15,7 @@ if [[ -f "${ENV_FILE}" ]]; then
   set +a
 fi
 
-LANGUAGE="${LANGUAGE:-de}"
+LANGUAGE="${LANGUAGE:-en}"
 HOST_LABEL="${HOST_LABEL:-$(hostname 2>/dev/null || echo 'UGREEN NAS')}"
 BACKUP_DIR="${BACKUP_DIR:-/volume2/DockerBackup}"
 TEMP_DIR="${TEMP_DIR:-${BACKUP_DIR}/tmp}"
@@ -144,7 +144,7 @@ run_background_if_requested(){
   bg_pid="${LOG_DIR}/ugreen-docker-restore-nohup.pid"
   script_path="$0"
 
-  echo "Starte Docker-Restore im Hintergrund."
+  echo "Starting Docker restore in the background."
   echo "Log: ${bg_log}"
   UGREEN_DOCKER_RESTORE_BACKGROUND_CHILD=1 RESTORE_BACKGROUND=false nohup "$script_path" "$RESTORE_ARCHIVE" > "$bg_log" 2>&1 &
   echo $! > "$bg_pid"
@@ -1074,16 +1074,16 @@ def print_manual_hint(item):
     subnet = cfg.get("Subnet", "")
     gateway = cfg.get("Gateway", "")
     parent = (item.get("options") or {}).get("parent", "")
-    log("[Netzwerke] Manuelle Anlage in UGOS Docker-App:")
+    log("[Networks] Manual creation in the UGOS Docker app:")
     log(f"  Name    : {name}")
-    log(f"  Modus   : {driver}")
+    log(f"  Mode    : {driver}")
     if parent:
-        log(f"  Parent aus Backup: {parent}")
+        log(f"  Parent from backup: {parent}")
     if subnet:
-        log(f"  Subnetz : {subnet}")
+        log(f"  Subnet  : {subnet}")
     if gateway:
         log(f"  Gateway : {gateway}")
-    log("  Hinweis : In UGOS bei macvlan die LAN-Karte auswaehlen, z. B. BR-LAN1. Docker CLI benoetigt dagegen den echten Linux-Interface-Namen wie bridge0 oder eth0.")
+    log("  Note    : For macvlan in UGOS, select the LAN interface, e.g. BR-LAN1. Docker CLI, however, requires the actual Linux interface name such as bridge0 or eth0.")
 
 def create_network(item):
     name = item.get("name") or ""
@@ -1093,12 +1093,12 @@ def create_network(item):
 
     if driver == "macvlan":
         if not is_true(os.environ.get("RESTORE_CREATE_MACVLAN_NETWORKS", "true")):
-            log(f"[Netzwerke] FEHLT macvlan: {name}. Automatisches Anlegen ist deaktiviert.")
+            log(f"[Networks] MISSING macvlan: {name}. Automatic creation is disabled.")
             print_manual_hint(item)
             return False
         candidates = macvlan_parent_candidates(item)
         if not candidates:
-            log(f"[Netzwerke] FEHLT macvlan: {name}. Keine passende Linux-Netzwerkschnittstelle erkannt.")
+            log(f"[Networks] MISSING macvlan: {name}. No suitable Linux network interface detected.")
             print_manual_hint(item)
             return False
 
@@ -1111,15 +1111,15 @@ def create_network(item):
             if k and v is not None:
                 base += ["--label", f"{k}={v}"]
 
-        log(f"[Netzwerke] Erstelle macvlan-Netzwerk {name}. Kandidaten fuer parent: {', '.join(candidates)}")
+        log(f"[Networks] Creating macvlan network {name}. Parent candidates: {', '.join(candidates)}")
         for parent in candidates:
             cmd = list(base) + ["-o", f"parent={parent}", name]
             rc = run(cmd)
             if rc == 0:
-                log(f"[Netzwerke] OK: macvlan-Netzwerk {name} wurde mit parent={parent} erstellt.")
+                log(f"[Networks] OK: macvlan network {name} was created with parent={parent}.")
                 return True
             subprocess.run([docker_bin, "network", "rm", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        log(f"[Netzwerke] FEHLER: macvlan-Netzwerk {name} konnte mit keinem Kandidaten erstellt werden.")
+        log(f"[Networks] ERROR: macvlan network {name} could not be created with any candidate.")
         print_manual_hint(item)
         return False
 
@@ -1136,11 +1136,11 @@ def create_network(item):
 try:
     plan = json.loads(Path(plan_file).read_text(encoding="utf-8"))
 except Exception as exc:
-    log(f"[Netzwerke] Netzwerkplan konnte nicht gelesen werden: {exc}")
+    log(f"[Networks] Network plan could not be read: {exc}")
     raise SystemExit(0)
 
 if not isinstance(plan, list):
-    log("[Netzwerke] Netzwerkplan hat ein ungueltiges Format, ueberspringe.")
+    log("[Networks] Network plan has an invalid format; skipping.")
     raise SystemExit(0)
 
 missing = []
@@ -1156,25 +1156,25 @@ for item in plan:
         detail += f", gateway={cfg.get('Gateway')}"
     detail += ")"
     if exists_net(name):
-        log(f"[Netzwerke] OK vorhanden: {detail}")
+        log(f"[Networks] OK present: {detail}")
     else:
-        log(f"[Netzwerke] FEHLT: {detail}")
+        log(f"[Networks] MISSING: {detail}")
         missing.append(item)
 
 if not missing:
-    log("[Netzwerke] OK: Alle im Backup benoetigten Netzwerke sind vorhanden.")
+    log("[Networks] OK: All networks required by the backup are present.")
     raise SystemExit(0)
 
 if is_true(os.environ.get("DRY_RUN", "true")):
-    log("[DRY-RUN] Fehlende Netzwerke wuerden vor dem Compose-Start angelegt bzw. als manuelle Aktion gemeldet.")
+    log("[DRY-RUN] Missing networks would be created before Compose startup or reported as manual actions.")
     for item in missing:
         if (item.get("driver") or "") == "macvlan":
             cands = macvlan_parent_candidates(item)
-            log(f"[DRY-RUN] macvlan {item.get('name')}: parent-Kandidaten: {', '.join(cands) if cands else 'keine'}")
+            log(f"[DRY-RUN] macvlan {item.get('name')}: parent candidates: {', '.join(cands) if cands else 'none'}")
     raise SystemExit(0)
 
 if not is_true(os.environ.get("RESTORE_CREATE_MISSING_NETWORKS", "true")):
-    log("[Netzwerke] Automatisches Anlegen fehlender Netzwerke ist deaktiviert.")
+    log("[Networks] Automatic creation of missing networks is disabled.")
     for item in missing:
         print_manual_hint(item)
     raise SystemExit(2 if is_true(os.environ.get("RESTORE_FAIL_ON_NETWORK_ERROR", "true")) else 0)
@@ -1185,10 +1185,10 @@ for item in missing:
         failed.append(item.get("name") or "unknown")
 
 if failed:
-    log("[Netzwerke] FEHLER: Folgende Netzwerke fehlen weiterhin: " + ", ".join(failed))
+    log("[Networks] ERROR: The following networks are still missing: " + ", ".join(failed))
     raise SystemExit(2 if is_true(os.environ.get("RESTORE_FAIL_ON_NETWORK_ERROR", "true")) else 0)
 
-log("[Netzwerke] OK: Fehlende Netzwerke wurden angelegt.")
+log("[Networks] OK: Missing networks were created.")
 PYNET
 }
 
@@ -1637,7 +1637,7 @@ from pathlib import Path
  restore_fix_file_mode, update_db, ugos_db_status, ugos_refresh_status, log_file, enable_remap,
  remap_from, remap_to, remap_file, failure_reason, last_cmd) = sys.argv[1:32]
 
-lang_en = (language or "de").lower().startswith("en")
+lang_en = (language or "en").lower().startswith("en")
 base = Path(backup_root) if backup_root else Path("")
 meta = base / "metadata"
 
