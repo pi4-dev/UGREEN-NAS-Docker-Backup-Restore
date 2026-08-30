@@ -1,28 +1,30 @@
 # 🚀 UGREEN NAS Docker Backup & Restore
 
-![Docker Backup Pack](Screen/DockerBackupPack.png)
+[🇩🇪 Deutsche Version](README.DE.md)
 
-## 📦 Überblick
+![Docker Backup Pack](Screen/DockerBackupPackEN.png)
 
-Dieses Projekt stellt ein leistungsstarkes Backup-, Restore- und Migrationssystem für Docker-Projekte auf UGREEN NAS mit UGOS bereit.
+## 📦 Overview
 
-✔ Backup von Docker-Containern und Projekten
-✔ Restore mit UGOS-Docker-App-Integration
-✔ Migration auf ein anderes UGREEN NAS
-✔ Unterstützung für Standalone-Container
-✔ Optionale SCP-Remote-Sicherung
-✔ Pfad-Remapping für NAS-Umzüge
-✔ E-Mail-Benachrichtigungen
-✔ Cronjob-Unterstützung
-✔ Shutdown Unterstützung nach Abschluss
-✔ Deutsch & Englisch
+This project provides a powerful backup, restore, and migration system for Docker projects running on UGREEN NAS with UGOS.
 
-* * *
+✔ Backup of Docker containers and projects  
+✔ Restore with UGOS Docker app integration  
+✔ Migration to another UGREEN NAS  
+✔ Support for standalone containers  
+✔ Optional SCP remote backup  
+✔ Path remapping for NAS migrations  
+✔ E-mail notifications  
+✔ Cron job support  
+✔ Optional shutdown after successful completion  
+✔ English and German runtime output
 
-## 📁 Repository Struktur
+---
+
+## 📁 Repository structure
 
 ```text
-v1.00/
+UGREEN-NAS-Docker-Backup-Restore/
 ├── DockerBackup/
 │   ├── backup-exclude-paths.txt
 │   ├── dockersich.env.example
@@ -31,51 +33,54 @@ v1.00/
 │   └── ugreen-docker-restore.sh
 │
 ├── Screen/
-│   └── DockerBackupPack.png
+│   ├── DockerBackupPack.png
+│   ├── DockerBackupPackEN.png
+│   └── DockerBackupPack_1200.jpg
 │
 ├── README.md
-├── CHANGELOG.md
+├── README.DE.md
+├── Changelog.txt
 └── UGREEN_Docker_BR_DE_EN.pdf
 ```
 
-* * *
+---
 
 ## ⚙️ Installation
 
-### 1. Freigabe in UGOS anlegen
+### 1. Create a shared folder in UGOS
 
-Lege in der UGOS-App **Dateien** eine Freigabe mit dem Namen **DockerBackup** an.
+In the UGOS **Files** app, create a shared folder named **DockerBackup**.
 
-Beispiel:
+Example:
 
 ```text
 /volume2/DockerBackup
 ```
 
-Hinweise:
-- Papierkorb für diese Freigabe deaktiviert lassen
-- Prüfen, dass Administratoren Lese- und Schreibrechte haben
-- Das Volume kann auch ein anderes sein, zum Beispiel `/volume1` oder `/volume3`
+Notes:
+- Keep the recycle bin disabled for this share.
+- Make sure administrators have read and write permissions.
+- The share may also be located on another volume, such as `/volume1` or `/volume3`.
 
-* * *
+---
 
-### 2. Dateien kopieren
+### 2. Copy the files
 
-Kopiere den Inhalt aus:
+Copy the contents of:
 
 ```text
 DockerBackup/
 ```
 
-nach:
+to:
 
 ```text
 /volume2/DockerBackup
 ```
 
-* * *
+---
 
-### 3. Rechte setzen
+### 3. Set permissions
 
 ```bash
 cd /volume2/DockerBackup
@@ -83,20 +88,20 @@ cp dockersich.env.example dockersich.env
 chmod +x ugreen-docker-backup.sh ugreen-docker-restore.sh
 ```
 
-* * *
+---
 
-### 4. Konfiguration anpassen
+### 4. Adjust the configuration
 
-Datei:
+Configuration file:
 
 ```text
 /volume2/DockerBackup/dockersich.env
 ```
 
-Für den ersten Test sollten Einsteiger vor allem diese Werte prüfen:
+For a first test, beginners should review at least these values:
 
 ```bash
-LANGUAGE=de
+LANGUAGE=en
 HOST_LABEL="UGREEN NAS"
 SOURCE_DIR=auto
 BACKUP_DIR=/volume2/DockerBackup
@@ -104,213 +109,212 @@ SEND_MAIL=false
 DRY_RUN=true
 ```
 
-Wichtige Hinweise:
-- `SOURCE_DIR=auto` erkennt den Docker-Projektordner automatisch
-- `DOCKER_ROOT_DIR=auto` erkennt das Docker-Datenverzeichnis automatisch
-- `UGOS_DOCKER_DB=auto` erkennt die UGOS-Docker-Datenbank automatisch
-- `DRY_RUN=true` ist für den ersten Restore-Test empfehlenswert
+Important notes:
+- `SOURCE_DIR=auto` automatically detects the Docker project directory.
+- `DOCKER_ROOT_DIR=auto` automatically detects the Docker data directory.
+- `UGOS_DOCKER_DB=auto` automatically detects the UGOS Docker database.
+- `DRY_RUN=true` is strongly recommended for the first restore test.
 
-* * *
+---
 
-## 🗂️ Wichtige Optionen
+## 🗂️ Important options
 
-### Basis und Pfade
+### Base settings and paths
 
-- `LANGUAGE` = Sprache für Ausgaben, Logs und Mails (`de` oder `en`)
-- `HOST_LABEL` = Anzeigename des NAS in Logs und Mails
-- `SOURCE_DIR` = Docker-Projektordner, meist automatisch erkannt
-- `BACKUP_DIR` = Zielordner für Archive, Logs und temporäre Dateien
-- `TEMP_DIR` = temporärer Arbeitsordner
-- `LOG_DIR` = Ordner für Backup- und Restore-Logs
+- `LANGUAGE` = output, log, and mail language (`en` or `de`)
+- `HOST_LABEL` = display name of the NAS in logs and e-mails
+- `SOURCE_DIR` = Docker project directory, usually detected automatically
+- `BACKUP_DIR` = destination directory for archives, logs, and temporary files
+- `TEMP_DIR` = temporary working directory
+- `LOG_DIR` = directory for backup and restore logs
 
-### Backup-Verhalten
+### Backup behavior
 
-- `BACKUP_ALL_PROJECTS=true` = alle erkannten Docker-Projekte sichern
-- `INCLUDE_PROJECTS` = nur bestimmte Projekte sichern
-- `EXCLUDE_PROJECTS` = Projekte vom Backup ausschließen
-- `BACKUP_STANDALONE_CONTAINERS=true` = Container ohne Compose-Projekt mit sichern
-- `STOP_CONTAINERS=true` = laufende Container vor dem Backup kurz stoppen
-- `BACKUP_EXCLUDE_PATHS_FILE=backup-exclude-paths.txt` = Ausschlussliste für große Cache-Ordner
+- `BACKUP_ALL_PROJECTS=true` = back up all detected Docker projects
+- `INCLUDE_PROJECTS` = back up only selected projects
+- `EXCLUDE_PROJECTS` = exclude selected projects from the backup
+- `BACKUP_STANDALONE_CONTAINERS=true` = also back up containers without a Compose project
+- `STOP_CONTAINERS=true` = briefly stop running containers before backup
+- `BACKUP_EXCLUDE_PATHS_FILE=backup-exclude-paths.txt` = exclusion list for large cache directories
 
-### Zusätzliche Inhalte
+### Additional backup content
 
-- `BACKUP_IMAGES=false` = Docker-Images zusätzlich sichern
-- `BACKUP_NAMED_VOLUMES=false` = Named Volumes zusätzlich sichern
-- `BACKUP_EXTERNAL_BINDS=false` = externe Bind-Mounts zusätzlich sichern
+- `BACKUP_IMAGES=false` = additionally back up Docker images
+- `BACKUP_NAMED_VOLUMES=false` = additionally back up named volumes
+- `BACKUP_EXTERNAL_BINDS=false` = additionally back up external bind mounts
 
-### Restore-Verhalten
+### Restore behavior
 
-- `DRY_RUN=true` = Restore erst nur simulieren
-- `RESTORE_ALL_PROJECTS=false` = gezielter Restore statt alles zurückspielen
-- `RESTORE_PROJECTS` = nur bestimmte Projekte wiederherstellen
-- `RESTORE_OVERWRITE_EXISTING=false` = vorhandene Zielordner nicht überschreiben
-- `RESTORE_STANDALONE_CONTAINERS=true` = Standalone-Container ebenfalls wiederherstellen
-- `ENABLE_PATH_REMAP=true` = Pfade beim Umzug auf ein anderes NAS anpassen
-- `PATH_REMAP_FILE=path-remap.tsv` = Datei mit Quell- und Zielpfaden
-- `UPDATE_UGOS_DOCKER_DB=true` = UGOS-Docker-App-Datenbank aktualisieren
-- `REFRESH_UGOS_DOCKER_APP=true` = Docker-App-Dienst nach Restore aktualisieren
+- `DRY_RUN=true` = simulate the restore without making changes
+- `RESTORE_ALL_PROJECTS=false` = perform a targeted restore instead of restoring everything
+- `RESTORE_PROJECTS` = restore only selected projects
+- `RESTORE_OVERWRITE_EXISTING=false` = do not overwrite existing target directories
+- `RESTORE_STANDALONE_CONTAINERS=true` = also restore standalone containers
+- `ENABLE_PATH_REMAP=true` = remap paths when migrating to another NAS
+- `PATH_REMAP_FILE=path-remap.tsv` = source-to-target path mapping file
+- `UPDATE_UGOS_DOCKER_DB=true` = update the UGOS Docker app database
+- `REFRESH_UGOS_DOCKER_APP=true` = refresh the Docker app service after restore
 
-### Benachrichtigungen und Remote-Sicherung
+### Notifications and remote backup
 
-- `SEND_MAIL=true|false` = Mailbenachrichtigungen aktivieren oder deaktivieren
-- `MAIL_NOTIFY_ON=all|success|fail|none` = wann Mails verschickt werden
-- `ENABLE_REMOTE_BACKUP=true|false` = Archiv zusätzlich per SCP auf ein anderes System kopieren
-- `REMOTE_HOST`, `REMOTE_USER`, `REMOTE_PORT`, `REMOTE_PATH` = Zielsystem für Remote-Backups
+- `SEND_MAIL=true|false` = enable or disable e-mail notifications
+- `MAIL_NOTIFY_ON=all|success|fail|none` = select when notifications are sent
+- `ENABLE_REMOTE_BACKUP=true|false` = additionally copy the archive to another system via SCP
+- `REMOTE_HOST`, `REMOTE_USER`, `REMOTE_PORT`, `REMOTE_PATH` = remote backup destination
 
-* * *
+---
 
-## 🔄 Backup starten
+## 🔄 Run a backup
 
 ```bash
 cd /volume2/DockerBackup
 ./ugreen-docker-backup.sh
 ```
 
-Das Skript:
-- erkennt Docker-Pfade automatisch
-- wählt die Projekte anhand der Konfiguration aus
-- stoppt auf Wunsch laufende Container kurz
-- erstellt ein komprimiertes Archiv
-- startet zuvor laufende Container wieder
-- verschickt optional Statusmails
+The script:
+- automatically detects Docker paths,
+- selects projects according to the configuration,
+- optionally stops running containers for a short time,
+- creates a compressed archive,
+- restarts containers that were running before the backup,
+- optionally sends status e-mails.
 
-* * *
+---
 
-## ♻️ Restore starten
+## ♻️ Run a restore
 
-Restore immer zuerst mit Dry-Run testen:
+Always test a restore in dry-run mode first:
 
 ```bash
 cd /volume2/DockerBackup
 ./ugreen-docker-restore.sh /volume2/DockerBackup/ugreen-docker-backup_YYYY-MM-DD_HH-MM-SS.tar.gz
 ```
 
-Für den ersten Test in `dockersich.env`:
+For the first test, set in `dockersich.env`:
 
 ```bash
 DRY_RUN=true
 ```
 
-Für einen echten Restore später:
+For an actual restore later:
 
 ```bash
 DRY_RUN=false
 ```
 
-Danach fragt das Skript zur Sicherheit nach der Eingabe:
+For safety, the script then asks you to enter:
 
 ```text
 RESTORE
 ```
 
-* * *
+---
 
-## 🔁 Container auf ein anderes UGREEN NAS umziehen
+## 🔁 Migrate containers to another UGREEN NAS
 
-Das Paket eignet sich auch, um Docker-Projekte auf ein anderes UGREEN NAS umzuziehen.
+The package can also be used to migrate Docker projects to another UGREEN NAS.
 
-Typischer Ablauf:
-1. Backup auf dem Quell-NAS erstellen
-2. Archiv auf das Ziel-NAS kopieren
-3. Falls nötig `path-remap.tsv` anpassen
-4. Restore auf dem Ziel-NAS ausführen
-5. UGOS-Docker-App-Abgleich automatisch durchführen lassen
+Typical workflow:
+1. Create a backup on the source NAS.
+2. Copy the archive to the target NAS.
+3. Adjust `path-remap.tsv` if required.
+4. Run the restore on the target NAS.
+5. Let the script synchronize the restored projects with the UGOS Docker app automatically.
 
-Damit können Projektordner, Compose-Projekte und auf Wunsch weitere Inhalte sauber auf das Zielsystem übernommen werden.
+This allows project directories, Compose projects, and optionally additional Docker data to be transferred cleanly to the target system.
 
-* * *
+---
 
-## 🧩 Standalone-Container
+## 🧩 Standalone containers
 
-Container ohne Compose-Projektlabel werden auf Wunsch automatisch als eigenes Projekt gesichert.
+Containers without a Docker Compose project label can automatically be backed up as separate projects.
 
-Beispiel:
+Example:
 
 ```text
 ubuntu-1 -> standalone_ubuntu-1
 ```
 
-Beim Restore wird daraus wieder ein Compose-Projekt erzeugt und in die UGOS-Docker-App integriert.
+During restore, a Compose project is generated for the container and integrated into the UGOS Docker app.
 
-* * *
+---
 
-## ⏱️ Cronjob einrichten
+## ⏱️ Configure a cron job
 
 ```bash
 crontab -e
 ```
 
-Beispiel:
+Example:
 
 ```bash
 30 3 * * 0 cd /volume2/DockerBackup && /volume2/DockerBackup/ugreen-docker-backup.sh >> /volume2/DockerBackup/cron.log 2>&1
 ```
 
-➡️ Läuft jeden Sonntag um 03:30 Uhr
+➡️ Runs every Sunday at 03:30.
 
-* * *
+---
 
 ## 📦 Features
 
-- Backup aller oder ausgewählter Docker-Projekte
-- Restore einzelner oder mehrerer Projekte
-- Migration auf ein anderes UGREEN NAS
-- Automatische Erkennung von Docker-Pfaden
-- Restore mit UGOS-Docker-App-Abgleich
-- Unterstützung für Standalone-Container
-- Ausschlusslisten für große Cache-Ordner
-- Optionales Backup von Images, Named Volumes und externen Bind-Mounts
-- SCP-basierte Remote-Sicherung
-- Path-Remapping für abweichende Zielpfade
-- E-Mail bei Start, Erfolg und Fehler
-- Logging und Cronjob-Betrieb
+- Back up all or selected Docker projects
+- Restore individual or multiple projects
+- Migrate to another UGREEN NAS
+- Automatically detect Docker paths
+- Restore with UGOS Docker app synchronization
+- Support standalone containers
+- Exclude large cache directories
+- Optional backup of images, named volumes, and external bind mounts
+- SCP-based remote backup
+- Path remapping for different target paths
+- E-mail notifications on start, success, and failure
+- Logging and cron operation
 
-* * *
+---
 
-## 📘 Handbuch
+## 📘 Manual
 
-Enthalten im Repository:
+Included in the repository:
 
 ```text
 UGREEN_Docker_BR_DE_EN.pdf
-UGREEN_Docker_BR_DE_EN.docx
 ```
 
-Das Handbuch enthält die vollständige Schritt-für-Schritt-Anleitung für Installation, Konfiguration, Backup, Restore und Migration.
+The manual contains step-by-step information for installation, configuration, backup, restore, and migration in German and English.
 
-* * *
+---
 
 ## 🛠️ Troubleshooting
 
-| Problem | Lösung |
+| Problem | Solution |
 |---|---|
-| Skript startet nicht | `chmod +x` prüfen |
-| Keine Mail | SMTP-Daten und `MAIL_NOTIFY_ON` prüfen |
-| Keine Projekte ausgewählt | `BACKUP_ALL_PROJECTS`, `INCLUDE_PROJECTS` und `EXCLUDE_PROJECTS` prüfen |
-| Archiv wird sehr groß | `backup-exclude-paths.txt` prüfen und Cache-Pfade ausschließen |
-| Restore erscheint nicht in UGOS | `REFRESH_UGOS_DOCKER_APP=true` nutzen oder Projekt in UGOS neu bereitstellen |
-| `scp` schlägt fehl | bei manuellen Tests `scp -O` verwenden |
+| Script does not start | Check `chmod +x` permissions |
+| No e-mail is sent | Check SMTP settings and `MAIL_NOTIFY_ON` |
+| No projects are selected | Check `BACKUP_ALL_PROJECTS`, `INCLUDE_PROJECTS`, and `EXCLUDE_PROJECTS` |
+| Archive becomes very large | Review `backup-exclude-paths.txt` and exclude cache paths |
+| Restored project does not appear in UGOS | Use `REFRESH_UGOS_DOCKER_APP=true` or redeploy the project in UGOS |
+| `scp` fails | Use `scp -O` for manual tests |
 
-* * *
+---
 
-## ⚠️ Hinweis
+## ⚠️ Disclaimer
 
-Dieses Projekt ist eine Community-Lösung und kein offizielles UGREEN-Produkt.
-Verwendung auf eigene Verantwortung.
+This project is a community solution and is not an official UGREEN product.
+Use it at your own risk.
 
-* * *
+---
 
-## 👨‍💻 Autor
+## 👨‍💻 Author
 
 Roman Glos  
 UGREEN NAS Community
 
-* * *
+---
 
 ## ⭐ Support
 
-Wenn dir das Projekt gefällt:
+If you find this project useful:
 
-- Star ⭐ auf GitHub
-- Feedback ist willkommen
-- Verbesserungsvorschläge und Praxistests helfen dem Projekt weiter
+- Give it a ⭐ on GitHub.
+- Feedback is welcome.
+- Improvement suggestions and real-world testing help the project evolve.
