@@ -2,12 +2,12 @@ UGREEN NAS Docker Backup & Restore v1.10
 Copyright (c) 2026 Roman Glos
 
 
-Änderungen:
-1. Restore bricht bei Compose-Fehlern nicht mehr sofort komplett ab.
-2. UGOS-Projekte werden vor dem Compose-Start in der UGOS-Docker-DB registriert.
-3. Docker-Netzwerke werden aus dem Backup erkannt und vor dem Start wiederhergestellt.
-4. Bind-Mounts unterhalb von SOURCE_DIR, aber außerhalb des Projektordners, werden automatisch mitgesichert.
-   Beispiel: /volume2/docker/livisi-legacy-proxy
-5. Datei-vs-Ordner-Mounts werden vor docker compose up geprüft.
-6. Restore kann per RESTORE_BACKGROUND=true sauber im Hintergrund mit nohup laufen.
-7. UID/GID wird nicht hart angenommen. Restore-Rechte laufen weiter über RESTORE_FIX_OWNER=auto bzw. .env.
+Changes:
+1. Restore no longer aborts the entire process immediately when a Compose error occurs.
+2. UGOS projects are registered in the UGOS Docker database before Compose startup.
+3. Docker networks are detected from the backup and restored before project startup.
+4. Bind mounts located below SOURCE_DIR but outside the project directory are backed up automatically.
+   Example: /volume2/docker/livisi-legacy-proxy
+5. File-vs-directory mounts are validated before running docker compose up.
+6. Restore can run cleanly in the background with nohup when RESTORE_BACKGROUND=true.
+7. UID/GID values are not hard-coded. Restore permissions continue to use RESTORE_FIX_OWNER=auto or the value configured in .env.
