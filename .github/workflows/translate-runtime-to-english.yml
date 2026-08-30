@@ -1,0 +1,95 @@
+name: Translate runtime strings to English
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/translate-runtime-to-english.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Translate runtime strings
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_all(path, replacements):
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              for old, new in replacements:
+                  if old not in text:
+                      print(f"WARNING: expected text not found in {path}: {old[:100]!r}")
+                  text = text.replace(old, new)
+              p.write_text(text, encoding="utf-8")
+
+          replace_all("DockerBackup/ugreen-docker-backup.sh", [
+              ('LANGUAGE="${LANGUAGE:-de}"', 'LANGUAGE="${LANGUAGE:-en}"'),
+              ('REMOTE_BACKUP_STATUS="deaktiviert"', 'REMOTE_BACKUP_STATUS="disabled"'),
+              ('REMOTE_BACKUP_STATUS="übersprungen"', 'REMOTE_BACKUP_STATUS="skipped"'),
+              ('REMOTE_BACKUP_ERROR="REMOTE_HOST, REMOTE_USER oder REMOTE_PATH fehlt."', 'REMOTE_BACKUP_ERROR="REMOTE_HOST, REMOTE_USER, or REMOTE_PATH is missing."'),
+              ('REMOTE_BACKUP_STATUS="läuft"', 'REMOTE_BACKUP_STATUS="running"'),
+              ('REMOTE_BACKUP_STATUS="fehlgeschlagen"', 'REMOTE_BACKUP_STATUS="failed"'),
+              ('REMOTE_BACKUP_ERROR="Zielordner konnte nicht erstellt werden: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"', 'REMOTE_BACKUP_ERROR="Target folder could not be created: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"'),
+              ('REMOTE_BACKUP_ERROR="SCP-Übertragung fehlgeschlagen: ${remote_target_display}"', 'REMOTE_BACKUP_ERROR="SCP transfer failed: ${remote_target_display}"'),
+              ('REMOTE_BACKUP_ERROR="Rsync-Übertragung fehlgeschlagen: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"', 'REMOTE_BACKUP_ERROR="Rsync transfer failed: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_PATH}"'),
+              ('REMOTE_BACKUP_ERROR="Unbekannte REMOTE_METHOD: ${REMOTE_METHOD}"', 'REMOTE_BACKUP_ERROR="Unknown REMOTE_METHOD: ${REMOTE_METHOD}"'),
+              ('REMOTE_BACKUP_STATUS="erfolgreich"', 'REMOTE_BACKUP_STATUS="successful"'),
+              ('lang_en = (language or "de").lower().startswith("en")', 'lang_en = (language or "en").lower().startswith("en")'),
+              ('warnings.append(f"{project}: docker compose config konnte nicht ausgeführt werden: {exc}")', 'warnings.append(f"{project}: docker compose config could not be executed: {exc}")'),
+              ('warnings.append(f"{project}: docker compose config fehlgeschlagen: {msg[:500]}")', 'warnings.append(f"{project}: docker compose config failed: {msg[:500]}")'),
+              ('warnings.append(f"{project}: docker compose config JSON konnte nicht gelesen werden: {exc}")', 'warnings.append(f"{project}: docker compose config JSON could not be read: {exc}")'),
+              ('f.write("Netzwerke aus Compose-Referenzen ohne docker network inspect auf dem Quell-NAS:\\n")', 'f.write("Networks referenced by Compose without docker network inspect data on the source NAS:\\n")'),
+              ('{print "  - " $3 " (Projekt: " $4 ")"}', '{print "  - " $3 " (Project: " $4 ")"}'),
+              ('local failed_cmd="${BASH_COMMAND:-unbekannt}"', 'local failed_cmd="${BASH_COMMAND:-unknown}"'),
+              ('FAILURE_REASON="Exit-Code ${exitcode}; letzter Befehl: ${failed_cmd}"', 'FAILURE_REASON="Exit code ${exitcode}; last command: ${failed_cmd}"'),
+          ])
+
+          replace_all("DockerBackup/ugreen-docker-restore.sh", [
+              ('LANGUAGE="${LANGUAGE:-de}"', 'LANGUAGE="${LANGUAGE:-en}"'),
+              ('echo "Starte Docker-Restore im Hintergrund."', 'echo "Starting Docker restore in the background."'),
+              ('lang_en = (language or "de").lower().startswith("en")', 'lang_en = (language or "en").lower().startswith("en")'),
+              ('log("[Netzwerke] Manuelle Anlage in UGOS Docker-App:")', 'log("[Networks] Manual creation in the UGOS Docker app:")'),
+              ('log(f"  Modus   : {driver}")', 'log(f"  Mode    : {driver}")'),
+              ('log(f"  Parent aus Backup: {parent}")', 'log(f"  Parent from backup: {parent}")'),
+              ('log(f"  Subnetz : {subnet}")', 'log(f"  Subnet  : {subnet}")'),
+              ('log("  Hinweis : In UGOS bei macvlan die LAN-Karte auswaehlen, z. B. BR-LAN1. Docker CLI benoetigt dagegen den echten Linux-Interface-Namen wie bridge0 oder eth0.")', 'log("  Note    : For macvlan in UGOS, select the LAN interface, e.g. BR-LAN1. Docker CLI, however, requires the actual Linux interface name such as bridge0 or eth0.")'),
+              ('log(f"[Netzwerke] FEHLT macvlan: {name}. Automatisches Anlegen ist deaktiviert.")', 'log(f"[Networks] MISSING macvlan: {name}. Automatic creation is disabled.")'),
+              ('log(f"[Netzwerke] FEHLT macvlan: {name}. Keine passende Linux-Netzwerkschnittstelle erkannt.")', 'log(f"[Networks] MISSING macvlan: {name}. No suitable Linux network interface detected.")'),
+              ('log(f"[Netzwerke] Erstelle macvlan-Netzwerk {name}. Kandidaten fuer parent: {\', \'.join(candidates)}")', 'log(f"[Networks] Creating macvlan network {name}. Parent candidates: {\', \'.join(candidates)}")'),
+              ('log(f"[Netzwerke] OK: macvlan-Netzwerk {name} wurde mit parent={parent} erstellt.")', 'log(f"[Networks] OK: macvlan network {name} was created with parent={parent}.")'),
+              ('log(f"[Netzwerke] FEHLER: macvlan-Netzwerk {name} konnte mit keinem Kandidaten erstellt werden.")', 'log(f"[Networks] ERROR: macvlan network {name} could not be created with any candidate.")'),
+              ('log(f"[Netzwerke] Netzwerkplan konnte nicht gelesen werden: {exc}")', 'log(f"[Networks] Network plan could not be read: {exc}")'),
+              ('log("[Netzwerke] Netzwerkplan hat ein ungueltiges Format, ueberspringe.")', 'log("[Networks] Network plan has an invalid format; skipping.")'),
+              ('log(f"[Netzwerke] OK vorhanden: {detail}")', 'log(f"[Networks] OK present: {detail}")'),
+              ('log(f"[Netzwerke] FEHLT: {detail}")', 'log(f"[Networks] MISSING: {detail}")'),
+              ('log("[Netzwerke] OK: Alle im Backup benoetigten Netzwerke sind vorhanden.")', 'log("[Networks] OK: All networks required by the backup are present.")'),
+              ('log("[DRY-RUN] Fehlende Netzwerke wuerden vor dem Compose-Start angelegt bzw. als manuelle Aktion gemeldet.")', 'log("[DRY-RUN] Missing networks would be created before Compose startup or reported as manual actions.")'),
+              ('log(f"[DRY-RUN] macvlan {item.get(\'name\')}: parent-Kandidaten: {\', \'.join(cands) if cands else \'keine\'}")', 'log(f"[DRY-RUN] macvlan {item.get(\'name\')}: parent candidates: {\', \'.join(cands) if cands else \'none\'}")'),
+              ('log("[Netzwerke] Automatisches Anlegen fehlender Netzwerke ist deaktiviert.")', 'log("[Networks] Automatic creation of missing networks is disabled.")'),
+              ('log("[Netzwerke] FEHLER: Folgende Netzwerke fehlen weiterhin: " + ", ".join(failed))', 'log("[Networks] ERROR: The following networks are still missing: " + ", ".join(failed))'),
+              ('log("[Netzwerke] OK: Fehlende Netzwerke wurden angelegt.")', 'log("[Networks] OK: Missing networks were created.")'),
+          ])
+          PY
+
+          bash -n DockerBackup/ugreen-docker-backup.sh
+          bash -n DockerBackup/ugreen-docker-restore.sh
+
+      - name: Commit translated scripts and remove one-shot workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/translate-runtime-to-english.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add DockerBackup/ugreen-docker-backup.sh DockerBackup/ugreen-docker-restore.sh .github/workflows/translate-runtime-to-english.yml
+          git commit -m "Translate runtime messages to English"
+          git push origin main
