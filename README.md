@@ -1,6 +1,6 @@
 # 🚀 UGREEN NAS Docker Backup & Restore
 
-[🇵🇱 Polska wersja](README.pl.md) · [🇩🇪 Deutsche Version](README.DE.md)
+[🇵🇱 Polska wersja](README.PL.md) · [🇩🇪 Deutsche Version](README.DE.md)
 
 ![Docker Backup Pack](Screen/DockerBackupPackEN.png)
 
@@ -39,7 +39,7 @@ UGREEN-NAS-Docker-Backup-Restore/
 │
 ├── README.md
 ├── README.DE.md
-├── README.pl.md
+├── README.PL.md
 ├── Changelog.txt
 └── UGREEN_Docker_BR_DE_EN.pdf
 ```
