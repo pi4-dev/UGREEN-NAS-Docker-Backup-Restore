@@ -1,0 +1,70 @@
+name: Sync English sources into release ZIP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sync-english-release-zip.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync-zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Update text files inside release ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP='UGREEN_Docker_Backup_Restore_V1.10.zip'
+          WORK="$(mktemp -d)"
+          unzip -q "$ZIP" -d "$WORK/pkg"
+
+          python3 - "$WORK/pkg" <<'PY'
+          import shutil
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          repo = Path.cwd()
+
+          sources = {
+              'README.md': repo / 'README.md',
+              'Changelog.txt': repo / 'Changelog.txt',
+              'dockersich.env.example': repo / 'DockerBackup/dockersich.env.example',
+              'backup-exclude-paths.txt': repo / 'DockerBackup/backup-exclude-paths.txt',
+              'path-remap.tsv': repo / 'DockerBackup/path-remap.tsv',
+              'ugreen-docker-backup.sh': repo / 'DockerBackup/ugreen-docker-backup.sh',
+              'ugreen-docker-restore.sh': repo / 'DockerBackup/ugreen-docker-restore.sh',
+          }
+
+          for name, src in sources.items():
+              matches = list(root.rglob(name))
+              for dst in matches:
+                  shutil.copy2(src, dst)
+                  print(f'updated {dst.relative_to(root)}')
+
+          # Preserve the German README alongside the English README wherever README.md exists.
+          for readme in list(root.rglob('README.md')):
+              shutil.copy2(repo / 'README.DE.md', readme.with_name('README.DE.md'))
+              print(f'added {readme.with_name("README.DE.md").relative_to(root)}')
+          PY
+
+          rm -f "$ZIP"
+          (cd "$WORK/pkg" && zip -qr "$GITHUB_WORKSPACE/$ZIP" .)
+          unzip -t "$ZIP"
+
+      - name: Commit updated ZIP and remove one-shot workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/sync-english-release-zip.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add UGREEN_Docker_Backup_Restore_V1.10.zip .github/workflows/sync-english-release-zip.yml
+          git commit -m "Sync English sources into release ZIP"
+          git push origin main
